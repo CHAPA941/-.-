@@ -30,7 +30,7 @@ WELCOME_TEXT = (
     "Например:\n"
     "«привет поддержка мальчик»\n"
     "«мне нужна поддержка девочка»\n\n"
-    "Если хочешь конкретного хранителя, напиши его тег (например, #ангел)\n"
+    "Если хочешь конкретного администратора, напиши его тег (например, #ангел)\n"
     "Просто напиши сообщение, и я передам его админам."
 )
 
@@ -73,6 +73,14 @@ def is_owner(user_id: int) -> bool:
 def is_admin(user_id: int) -> bool:
     return user_id in admins or is_owner(user_id)
 
+def get_rank(user_id: int) -> str:
+    if is_owner(user_id):
+        return "👑 Владелец"
+    elif is_admin(user_id):
+        return "🛡️ Админ"
+    else:
+        return "👤 Пользователь"
+
 # ---------- Команды ----------
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -85,6 +93,7 @@ async def cmd_help(message: Message):
         "/help - эта справка\n"
         "/stats - статистика бота\n"
         "/id - узнать user_id текущей темы\n"
+        "/rank - узнать ранг пользователя (по ID или в текущей теме)\n"
         "/close - удалить текущую тему (закрыть диалог) [только владелец]\n"
         "/block - заблокировать пользователя (текстовая команда)\n"
         "/unblock - разблокировать пользователя (текстовая команда)\n"
@@ -102,13 +111,35 @@ async def cmd_help(message: Message):
 @dp.message(Command("myrank"))
 async def cmd_myrank(message: Message):
     user_id = message.from_user.id
-    if is_owner(user_id):
-        rank = "👑 Владелец"
-    elif is_admin(user_id):
-        rank = "🛡️ Админ"
-    else:
-        rank = "👤 Пользователь"
+    rank = get_rank(user_id)
     await message.answer(f"Ваш ранг: {rank}")
+
+@dp.message(Command("rank"), F.chat.id == GROUP_ID)
+async def cmd_rank(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Недостаточно прав.")
+        return
+    args = message.text.split()
+    if len(args) == 2:
+        try:
+            target_id = int(args[1])
+        except:
+            await message.answer("Неверный user_id.")
+            return
+    else:
+        # Если ID не указан, пробуем определить по текущей теме
+        topic_id = message.message_thread_id
+        target_id = None
+        for uid, tid in user_topics.items():
+            if tid == topic_id:
+                target_id = uid
+                break
+        if target_id is None:
+            await message.answer("Не удалось определить пользователя. Укажите ID: /rank <user_id>")
+            return
+
+    rank = get_rank(target_id)
+    await message.answer(f"Ранг пользователя {target_id}: {rank}")
 
 @dp.message(Command("stats"), F.chat.id == GROUP_ID)
 async def cmd_stats(message: Message):

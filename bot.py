@@ -16,7 +16,7 @@ OWNER_IDS = set(map(int, (os.getenv("OWNER_IDS", "") or "").split(",") if os.get
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-user_topics = {}
+user_topics = {}   # user_id -> topic_id
 blocked_users = set()
 admins = set()
 owners = OWNER_IDS
@@ -85,7 +85,7 @@ async def cmd_help(message: Message):
         "/help - эта справка\n"
         "/stats - статистика бота\n"
         "/id - узнать user_id текущей темы\n"
-        "/close - удалить текущую тему (закрыть диалог)\n"
+        "/close - удалить текущую тему (закрыть диалог) [только владелец]\n"
         "/block - заблокировать пользователя (текстовая команда)\n"
         "/unblock - разблокировать пользователя (текстовая команда)\n"
         "/myrank - узнать свой ранг\n\n"
@@ -131,6 +131,9 @@ async def cmd_id(message: Message):
 
 @dp.message(Command("close"), F.chat.id == GROUP_ID)
 async def cmd_close(message: Message):
+    if not is_owner(message.from_user.id):
+        await message.answer("⛔ Недостаточно прав. Команда доступна только владельцу.")
+        return
     topic_id = message.message_thread_id
     user_id = None
     for uid, tid in user_topics.items():
@@ -300,7 +303,7 @@ async def handle_admin_message(message: Message):
     except Exception as e:
         logging.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
 
-# Callback-кнопки (без изменений)
+# Обработка callback-кнопок
 @dp.callback_query(F.data.startswith("block:"))
 async def process_block_button(callback: CallbackQuery):
     user_id = int(callback.data.split(":")[1])

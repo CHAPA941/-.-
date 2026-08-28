@@ -11,13 +11,15 @@ from aiohttp import web
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
 PORT = int(os.getenv("PORT", 10000))
+OWNER_IDS = set(map(int, (os.getenv("OWNER_IDS", "") or "").split(",") if os.getenv("OWNER_IDS") else []))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-user_topics = {}   # user_id -> topic_id
-blocked_users = set()  # user_id
-admin_ids = set()  # сюда можно добавить ID админов, если нужно ограничивать команды
+user_topics = {}
+blocked_users = set()
+admins = set()
+owners = OWNER_IDS
 
 WELCOME_TEXT = (
     "Привет солнце🥰\n\n"
@@ -65,7 +67,13 @@ def get_confirm_keyboard(user_id: int) -> InlineKeyboardMarkup:
     ]]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# ---------- Обработка команд ----------
+def is_owner(user_id: int) -> bool:
+    return user_id in owners
+
+def is_admin(user_id: int) -> bool:
+    return user_id in admins or is_owner(user_id)
+
+# ---------- Команды ----------
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     await message.answer(WELCOME_TEXT)
@@ -80,11 +88,27 @@ async def cmd_help(message: Message):
         "/close - удалить текущую тему (закрыть диалог)\n"
         "/block - заблокировать пользователя (текстовая команда)\n"
         "/unblock - разблокировать пользователя (текстовая команда)\n"
+        "/myrank - узнать свой ранг\n\n"
+        "Команды для владельца:\n"
+        "/setrank <user_id> <admin|owner> - назначить ранг\n"
+        "/removerank <user_id> - снять ранг\n"
+        "/liststaff - показать всех владельцев и админов\n"
         "/clear - сбросить все данные (осторожно!)\n\n"
         "Сообщения без // пересылаются пользователю.\n"
         "Сообщения с // остаются в теме как заметки."
     )
     await message.answer(help_text)
+
+@dp.message(Command("myrank"))
+async def cmd_myrank(message: Message):
+    user_id = message.from_user.id
+    if is_owner(user_id):
+        rank = "👑 Владелец"
+    elif is_admin(user_id):
+        rank = "🛡️ Админ"
+    else:
+        rank = "👤 Пользователь"
+    await message.answer(f"Ваш ранг: {rank}")
 
 @dp.message(Command("stats"), F.chat.id == GROUP_ID)
 async def cmd_stats(message: Message):
@@ -126,10 +150,63 @@ async def cmd_close(message: Message):
 
 @dp.message(Command("clear"), F.chat.id == GROUP_ID)
 async def cmd_clear(message: Message):
-    # Очищаем все данные (пользователи и блокировки)
+    if not is_owner(message.from_user.id):
+        await message.answer("⛔ Недостаточно прав. Команда доступна только владельцу.")
+        return
     user_topics.clear()
     blocked_users.clear()
     await message.answer("Все данные сброшены.")
+
+@dp.message(Command("setrank"), F.chat.id == GROUP_ID)
+async def cmd_setrank(message: Message):
+    if not is_owner(message.from_user.id):
+        await message.answer("⛔ Недостаточно прав. Команда доступна только владельцу.")
+        return
+    args = message.text.split()
+    if len(args) != 3:
+        await message.answer("Формат: /setrank <user_id> <admin|owner>")
+        return
+    try:
+        target_id = int(args[1])
+        rank = args[2].lower()
+    except:
+        await message.answer("Неверный user_id.")
+        return
+    if rank == "admin":
+        admins.add(target_id)
+        await message.answer(f"Пользователь {target_id} назначен админом.")
+    elif rank == "owner":
+        owners.add(target_id)
+        await message.answer(f"Пользователь {target_id} назначен владельцем.")
+    else:
+        await message.answer("Ранг может быть только admin или owner.")
+
+@dp.message(Command("removerank"), F.chat.id == GROUP_ID)
+async def cmd_removerank(message: Message):
+    if not is_owner(message.from_user.id):
+        await message.answer("⛔ Недостаточно прав. Команда доступна только владельцу.")
+        return
+    args = message.text.split()
+    if len(args) != 2:
+        await message.answer("Формат: /removerank <user_id>")
+        return
+    try:
+        target_id = int(args[1])
+    except:
+        await message.answer("Неверный user_id.")
+        return
+    admins.discard(target_id)
+    owners.discard(target_id)
+    await message.answer(f"Ранг пользователя {target_id} снят.")
+
+@dp.message(Command("liststaff"), F.chat.id == GROUP_ID)
+async def cmd_liststaff(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Недостаточно прав.")
+        return
+    owners_list = ", ".join(map(str, owners)) if owners else "нет"
+    admins_list = ", ".join(map(str, admins)) if admins else "нет"
+    await message.answer(f"👑 Владельцы: {owners_list}\n🛡️ Админы: {admins_list}")
 
 # Текстовые команды блокировки/разблокировки
 @dp.message(Command("block"), F.chat.id == GROUP_ID)
@@ -223,7 +300,7 @@ async def handle_admin_message(message: Message):
     except Exception as e:
         logging.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
 
-# Обработка callback-кнопок
+# Callback-кнопки (без изменений)
 @dp.callback_query(F.data.startswith("block:"))
 async def process_block_button(callback: CallbackQuery):
     user_id = int(callback.data.split(":")[1])

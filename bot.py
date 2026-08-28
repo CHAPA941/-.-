@@ -27,7 +27,7 @@ WELCOME_TEXT = (
     "Например:\n"
     "«привет поддержка мальчик»\n"
     "«мне нужна поддержка девочка»\n\n"
-    "Если хочешь конкретного администратора, напиши его тег (например, #ангел)\n"
+    "Если хочешь конкретного хранителя, напиши его тег (например, #ангел)\n"
     "Просто напиши сообщение, и я передам его админам."
 )
 
@@ -49,11 +49,28 @@ def parse_request(text: str):
     return type_comm, admin_gender
 
 def get_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    """Клавиатура с кнопками Заблокировать и Прочитать."""
+    """Клавиатура в зависимости от статуса блокировки."""
+    if user_id in blocked_users:
+        # Если заблокирован – только кнопка разблокировки
+        buttons = [
+            [InlineKeyboardButton(text="🔓 Разблокировать", callback_data=f"unblock:{user_id}")]
+        ]
+    else:
+        # Иначе – Заблокировать и Прочитать
+        buttons = [
+            [
+                InlineKeyboardButton(text="🔒 Заблокировать", callback_data=f"block:{user_id}"),
+                InlineKeyboardButton(text="✅ Прочитать", callback_data=f"read:{user_id}")
+            ]
+        ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_confirm_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура подтверждения разблокировки."""
     buttons = [
         [
-            InlineKeyboardButton(text="🔒 Заблокировать", callback_data=f"block:{user_id}"),
-            InlineKeyboardButton(text="✅ Прочитать", callback_data=f"read:{user_id}")
+            InlineKeyboardButton(text="✅ Да, разблокировать", callback_data=f"confirm_unblock:{user_id}"),
+            InlineKeyboardButton(text="❌ Нет", callback_data=f"cancel_unblock:{user_id}")
         ]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -123,16 +140,66 @@ async def process_block_button(callback: CallbackQuery):
             await bot.send_message(user_id, "Вы были заблокированы.")
         except:
             pass
+        # Меняем кнопки на разблокировку
+        await callback.message.edit_text(
+            callback.message.text + "\n\n🔒 Заблокирован",
+            reply_markup=get_keyboard(user_id)
+        )
         await callback.answer("Пользователь заблокирован")
-        try:
-            await callback.message.edit_text(
-                callback.message.text + "\n\n🔒 Заблокирован",
-                reply_markup=None
-            )
-        except:
-            pass
     else:
         await callback.answer("Пользователь уже заблокирован")
+
+@dp.callback_query(F.data.startswith("unblock:"))
+async def process_unblock_button(callback: CallbackQuery):
+    user_id = int(callback.data.split(":")[1])
+    # Показываем подтверждение
+    await callback.message.edit_text(
+        callback.message.text + "\n\n❓ Вы точно хотите разблокировать?",
+        reply_markup=get_confirm_keyboard(user_id)
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("confirm_unblock:"))
+async def process_confirm_unblock(callback: CallbackQuery):
+    user_id = int(callback.data.split(":")[1])
+    if user_id in blocked_users:
+        blocked_users.discard(user_id)
+        try:
+            await bot.send_message(user_id, "Вы были разблокированы.")
+        except:
+            pass
+        # Восстанавливаем исходные кнопки и убираем пометку о блокировке
+        # Нам нужно удалить добавленные строки о блокировке и вопросе
+        original_text = callback.message.text
+        # Убираем строки "🔒 Заблокирован" и вопрос подтверждения, если они были
+        lines = original_text.split('\n')
+        # Удаляем последние строки с пометками
+        while lines and lines[-1].startswith(('🔒', '❓')):
+            lines.pop()
+        clean_text = '\n'.join(lines)
+        await callback.message.edit_text(
+            clean_text,
+            reply_markup=get_keyboard(user_id)
+        )
+        await callback.answer("Пользователь разблокирован")
+    else:
+        await callback.answer("Пользователь не заблокирован")
+
+@dp.callback_query(F.data.startswith("cancel_unblock:"))
+async def process_cancel_unblock(callback: CallbackQuery):
+    user_id = int(callback.data.split(":")[1])
+    # Отменяем подтверждение, возвращаем кнопку разблокировки
+    # Убираем последнюю строку с вопросом
+    original_text = callback.message.text
+    lines = original_text.split('\n')
+    if lines and lines[-1].startswith('❓'):
+        lines.pop()
+    clean_text = '\n'.join(lines)
+    await callback.message.edit_text(
+        clean_text,
+        reply_markup=get_keyboard(user_id)  # вернёт кнопку разблокировки, т.к. пользователь всё ещё заблокирован
+    )
+    await callback.answer()
 
 @dp.callback_query(F.data.startswith("read:"))
 async def process_read_button(callback: CallbackQuery):
@@ -142,6 +209,7 @@ async def process_read_button(callback: CallbackQuery):
     except:
         pass
     await callback.answer("Запрос отмечен как прочитанный")
+    # Редактируем сообщение, убираем кнопки, добавляем пометку
     try:
         await callback.message.edit_text(
             callback.message.text + "\n\n✅ Прочитано",
@@ -150,29 +218,7 @@ async def process_read_button(callback: CallbackQuery):
     except:
         pass
 
-@dp.message(F.chat.id == GROUP_ID, F.message_thread_id.is_not(None))
-async def handle_admin_message(message: Message):
-    if message.from_user.is_bot or message.is_topic_message is False:
-        return
-    # Если это команда (начинается с /), не пересылаем её пользователю
-    if message.text and message.text.startswith('/'):
-        return
-    topic_id = message.message_thread_id
-    user_id = None
-    for uid, tid in user_topics.items():
-        if tid == topic_id:
-            user_id = uid
-            break
-    if user_id is None:
-        return
-    text = message.text or ""
-    if text.startswith("//"):
-        return
-    try:
-        await bot.send_message(user_id, text)
-    except Exception as e:
-        logging.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
-
+# Команды /block и /unblock (текстовые)
 @dp.message(Command("block"), F.chat.id == GROUP_ID)
 async def block_user_cmd(message: Message):
     topic_id = message.message_thread_id
@@ -200,6 +246,29 @@ async def unblock_user_cmd(message: Message):
         await message.answer(f"Пользователь {user_id} разблокирован.")
     else:
         await message.answer("Не удалось определить пользователя.")
+
+@dp.message(F.chat.id == GROUP_ID, F.message_thread_id.is_not(None))
+async def handle_admin_message(message: Message):
+    if message.from_user.is_bot or message.is_topic_message is False:
+        return
+    # Если это команда (начинается с /), не пересылаем её пользователю
+    if message.text and message.text.startswith('/'):
+        return
+    topic_id = message.message_thread_id
+    user_id = None
+    for uid, tid in user_topics.items():
+        if tid == topic_id:
+            user_id = uid
+            break
+    if user_id is None:
+        return
+    text = message.text or ""
+    if text.startswith("//"):
+        return
+    try:
+        await bot.send_message(user_id, text)
+    except Exception as e:
+        logging.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
 
 async def main():
     logging.basicConfig(level=logging.INFO)

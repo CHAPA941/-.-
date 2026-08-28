@@ -4,7 +4,7 @@ import os
 import re
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import web
 
@@ -34,9 +34,6 @@ WELCOME_TEXT = (
 def parse_request(text: str):
     """Извлекает тип общения и пол админа из текста (с # или без)."""
     text_lower = text.lower()
-    # Убираем хэштеги для удобства
-    words = re.findall(r'[а-яa-z]+', text_lower)
-
     type_comm = None
     if 'поддержка' in text_lower or '#поддержка' in text_lower:
         type_comm = 'Поддержка'
@@ -51,6 +48,16 @@ def parse_request(text: str):
 
     return type_comm, admin_gender
 
+def get_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура с кнопками Заблокировать и Прочитать."""
+    buttons = [
+        [
+            InlineKeyboardButton(text="🔒 Заблокировать", callback_data=f"block:{user_id}"),
+            InlineKeyboardButton(text="✅ Прочитать", callback_data=f"read:{user_id}")
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     await message.answer(WELCOME_TEXT)
@@ -63,7 +70,6 @@ async def handle_user_message(message: Message):
         await message.answer("Вы заблокированы и не можете отправлять сообщения.")
         return
 
-    # Если темы ещё нет, пытаемся создать из этого сообщения
     if user_id not in user_topics:
         text = message.text or ""
         type_comm, admin_gender = parse_request(text)
@@ -83,7 +89,12 @@ async def handle_user_message(message: Message):
                     f"🚻 Предпочтительный пол админа: {admin_gender}\n\n"
                     f"Начинайте общение. Сообщения без // будут отправлены пользователю."
                 )
-                await bot.send_message(GROUP_ID, info, message_thread_id=topic_id)
+                await bot.send_message(
+                    GROUP_ID,
+                    info,
+                    message_thread_id=topic_id,
+                    reply_markup=get_keyboard(user_id)
+                )
                 await message.answer(
                     "Готово! Твой запрос принят. Администратор скоро свяжется с тобой в этом чате. "
                     "Все сообщения, которые ты напишешь, будут переданы ему."
@@ -99,14 +110,52 @@ async def handle_user_message(message: Message):
             )
         return
 
-    # Если тема уже есть — пересылаем сообщение в неё
     topic_id = user_topics[user_id]
     text = f"💬 Сообщение от пользователя:\n{message.text}"
     await bot.send_message(GROUP_ID, text, message_thread_id=topic_id)
 
+@dp.callback_query(F.data.startswith("block:"))
+async def process_block_button(callback: CallbackQuery):
+    user_id = int(callback.data.split(":")[1])
+    if user_id not in blocked_users:
+        blocked_users.add(user_id)
+        try:
+            await bot.send_message(user_id, "Вы были заблокированы.")
+        except:
+            pass
+        await callback.answer("Пользователь заблокирован")
+        try:
+            await callback.message.edit_text(
+                callback.message.text + "\n\n🔒 Заблокирован",
+                reply_markup=None
+            )
+        except:
+            pass
+    else:
+        await callback.answer("Пользователь уже заблокирован")
+
+@dp.callback_query(F.data.startswith("read:"))
+async def process_read_button(callback: CallbackQuery):
+    user_id = int(callback.data.split(":")[1])
+    try:
+        await bot.send_message(user_id, "Ваш запрос прочитан, скоро с вами свяжутся.")
+    except:
+        pass
+    await callback.answer("Запрос отмечен как прочитанный")
+    try:
+        await callback.message.edit_text(
+            callback.message.text + "\n\n✅ Прочитано",
+            reply_markup=None
+        )
+    except:
+        pass
+
 @dp.message(F.chat.id == GROUP_ID, F.message_thread_id.is_not(None))
 async def handle_admin_message(message: Message):
     if message.from_user.is_bot or message.is_topic_message is False:
+        return
+    # Если это команда (начинается с /), не пересылаем её пользователю
+    if message.text and message.text.startswith('/'):
         return
     topic_id = message.message_thread_id
     user_id = None
@@ -125,7 +174,7 @@ async def handle_admin_message(message: Message):
         logging.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
 
 @dp.message(Command("block"), F.chat.id == GROUP_ID)
-async def block_user(message: Message):
+async def block_user_cmd(message: Message):
     topic_id = message.message_thread_id
     user_id = None
     for uid, tid in user_topics.items():
@@ -139,7 +188,7 @@ async def block_user(message: Message):
         await message.answer("Не удалось определить пользователя.")
 
 @dp.message(Command("unblock"), F.chat.id == GROUP_ID)
-async def unblock_user(message: Message):
+async def unblock_user_cmd(message: Message):
     topic_id = message.message_thread_id
     user_id = None
     for uid, tid in user_topics.items():

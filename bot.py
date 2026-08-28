@@ -10,7 +10,7 @@ from aiohttp import web
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID = int(os.getenv("GROUP_ID"))
-PORT = int(os.getenv("PORT", 10000))  # Render подставит свой порт
+PORT = int(os.getenv("PORT", 10000))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -22,19 +22,34 @@ WELCOME_TEXT = (
     "Привет солнце🥰\n\n"
     "чтобы получить администратора нужно указать категорию, "
     "а так же пол админа который(ая) вас интересует:\n\n"
-    "#поддержка\n"
-    "#общение\n"
-    "#мальчик\n"
-    "#девочка\n\n"
-    "⌁ например:\n"
-    "— «привет #общение #девушка/мальчик»\n"
-    "— «мне нужна #поддержка #мальчик/девушка»\n\n"
-    "⌁ если вы хотите попасть к конкретному хранителю, напишите:\n"
-    "«позовите #тег»"
+    "— категория: поддержка или общение\n"
+    "— пол админа: мальчик или девочка\n\n"
+    "Например:\n"
+    "«привет поддержка мальчик»\n"
+    "«мне нужна поддержка девочка»\n\n"
+    "Если хочешь конкретного хранителя, напиши его тег (например, #ангел)\n"
+    "Просто напиши сообщение, и я передам его админам."
 )
 
-def extract_tags(text):
-    return re.findall(r'#(\w+)', text.lower())
+def parse_request(text: str):
+    """Извлекает тип общения и пол админа из текста (с # или без)."""
+    text_lower = text.lower()
+    # Убираем хэштеги для удобства
+    words = re.findall(r'[а-яa-z]+', text_lower)
+
+    type_comm = None
+    if 'поддержка' in text_lower or '#поддержка' in text_lower:
+        type_comm = 'Поддержка'
+    elif 'общение' in text_lower or '#общение' in text_lower:
+        type_comm = 'Общение'
+
+    admin_gender = None
+    if 'мальчик' in text_lower or '#мальчик' in text_lower:
+        admin_gender = 'Мальчик'
+    elif 'девочка' in text_lower or '#девочка' in text_lower or 'девушка' in text_lower or '#девушка' in text_lower:
+        admin_gender = 'Девочка'
+
+    return type_comm, admin_gender
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -43,28 +58,23 @@ async def cmd_start(message: Message):
 @dp.message(F.chat.type == "private")
 async def handle_user_message(message: Message):
     user_id = message.from_user.id
+
     if user_id in blocked_users:
         await message.answer("Вы заблокированы и не можете отправлять сообщения.")
         return
+
+    # Если темы ещё нет, пытаемся создать из этого сообщения
     if user_id not in user_topics:
         text = message.text or ""
-        tags = extract_tags(text)
-        type_comm = None
-        if "#поддержка" in tags:
-            type_comm = "Поддержка"
-        elif "#общение" in tags:
-            type_comm = "Общение"
-        admin_gender = None
-        if "#мальчик" in tags:
-            admin_gender = "Мальчик"
-        elif "#девочка" in tags or "#девушка" in tags:
-            admin_gender = "Девочка"
+        type_comm, admin_gender = parse_request(text)
+
         if type_comm and admin_gender:
             username = message.from_user.username or f"id{user_id}"
             try:
                 topic = await bot.create_forum_topic(chat_id=GROUP_ID, name=f"{username}")
                 topic_id = topic.message_thread_id
                 user_topics[user_id] = topic_id
+
                 info = (
                     f"🆕 Новый запрос!\n"
                     f"👤 Имя: {message.from_user.full_name}\n"
@@ -74,13 +84,22 @@ async def handle_user_message(message: Message):
                     f"Начинайте общение. Сообщения без // будут отправлены пользователю."
                 )
                 await bot.send_message(GROUP_ID, info, message_thread_id=topic_id)
-                await message.answer("Готово! Твой запрос принят. Администратор скоро свяжется с тобой в этом чате. Все сообщения, которые ты напишешь, будут переданы ему.")
+                await message.answer(
+                    "Готово! Твой запрос принят. Администратор скоро свяжется с тобой в этом чате. "
+                    "Все сообщения, которые ты напишешь, будут переданы ему."
+                )
             except Exception as e:
                 logging.error(f"Не удалось создать тему: {e}")
-                await message.answer("Произошла ошибка. Попробуй позже.")
+                await message.answer("Произошла ошибка. Попробуй позже или обратись к администратору напрямую.")
         else:
-            await message.answer("Пожалуйста, укажи в сообщении:\n— тип: #поддержка или #общение\n— пол админа: #мальчик или #девочка\n\nНапример: «привет #общение #мальчик»")
+            await message.answer(
+                "Пожалуйста, укажи в сообщении и категорию, и пол админа.\n"
+                "Например: «привет поддержка мальчик» или «общение девочка».\n"
+                "Можно и с хэштегами: #поддержка #мальчик"
+            )
         return
+
+    # Если тема уже есть — пересылаем сообщение в неё
     topic_id = user_topics[user_id]
     text = f"💬 Сообщение от пользователя:\n{message.text}"
     await bot.send_message(GROUP_ID, text, message_thread_id=topic_id)
@@ -116,6 +135,8 @@ async def block_user(message: Message):
     if user_id:
         blocked_users.add(user_id)
         await message.answer(f"Пользователь {user_id} заблокирован.")
+    else:
+        await message.answer("Не удалось определить пользователя.")
 
 @dp.message(Command("unblock"), F.chat.id == GROUP_ID)
 async def unblock_user(message: Message):
@@ -128,12 +149,18 @@ async def unblock_user(message: Message):
     if user_id:
         blocked_users.discard(user_id)
         await message.answer(f"Пользователь {user_id} разблокирован.")
+    else:
+        await message.answer("Не удалось определить пользователя.")
 
 async def main():
     logging.basicConfig(level=logging.INFO)
+    # Удаляем вебхук, если он был установлен ранее
+    await bot.delete_webhook(drop_pending_updates=True)
+
     # Запускаем поллинг в фоне
     polling_task = asyncio.create_task(dp.start_polling(bot))
-    # Запускаем веб-сервер для Render
+
+    # Веб-сервер для Render (чтобы не ругался на порт)
     app = web.Application()
     app.router.add_get('/', lambda request: web.Response(text="Bot is running"))
     runner = web.AppRunner(app)
@@ -141,7 +168,7 @@ async def main():
     site = web.TCPSite(runner, '0.0.0.0', PORT)
     await site.start()
     logging.info(f"Web server started on port {PORT}")
-    # Ждём завершения поллинга (если остановится)
+
     await polling_task
 
 if __name__ == "__main__":
